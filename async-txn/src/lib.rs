@@ -133,7 +133,9 @@ where
   /// Returns the current read version of the database.
   #[inline]
   pub async fn version(&self) -> u64 {
-    self.inner.read_ts().await
+    let version = self.inner.read_ts().await;
+    self.inner.done_read(version);
+    version
   }
 
   /// Close the transaction manager.
@@ -151,6 +153,16 @@ where
   /// This is useful when users want to implement compaction/merge functionality.
   pub fn discard_hint(&self) -> u64 {
     self.inner.discard_at_or_below()
+  }
+
+  /// Returns a version that compaction can safely reclaim up to.
+  ///
+  /// Unlike [`discard_hint`](Self::discard_hint), this accounts for read
+  /// timestamps that are currently active synchronously, so it can include the
+  /// commit that just finished without waiting for the watermark task.
+  #[inline]
+  pub fn compaction_hint(&self) -> u64 {
+    self.inner.compaction_hint()
   }
 
   /// Create a new writable transaction.

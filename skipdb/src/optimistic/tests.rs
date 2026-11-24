@@ -750,6 +750,86 @@ fn compact() {
 }
 
 #[test]
+fn compaction_reclaims_tombstones_after_deleting_seventy_percent() {
+  let db: OptimisticDb<u64, u64> = OptimisticDb::new();
+  let total = 2_000u64;
+
+  let mut txn = db.write();
+  for i in 0..total {
+    txn.insert(i, i).unwrap();
+  }
+  txn.commit().unwrap();
+
+  let deleted = total * 7 / 10;
+  let mut txn = db.write();
+  for i in 0..deleted {
+    txn.remove(i).unwrap();
+  }
+  txn.commit().unwrap();
+
+  let inner = db.as_inner();
+  assert_eq!(inner.live_len(), (total - deleted) as usize);
+  assert_eq!(inner.tombstone_len(), 0);
+  assert_eq!(inner.__by_ref().len(), (total - deleted) as usize);
+
+  let txn = db.read();
+  for i in 0..total {
+    let value = txn.get(&i);
+    if i < deleted {
+      assert!(value.is_none());
+    } else {
+      assert_eq!(*value.unwrap().value(), i);
+    }
+  }
+}
+
+#[test]
+fn compaction_keeps_active_snapshot_readable() {
+  let db: OptimisticDb<u64, u64> = OptimisticDb::new();
+  let total = 500u64;
+
+  let mut txn = db.write();
+  for i in 0..total {
+    txn.insert(i, i).unwrap();
+  }
+  txn.commit().unwrap();
+
+  let snapshot = db.read();
+
+  let deleted = total * 7 / 10;
+  let mut txn = db.write();
+  for i in 0..deleted {
+    txn.remove(i).unwrap();
+  }
+  txn.commit().unwrap();
+
+  // The deletion may have triggered compaction, but this reader started
+  // before it and must still see the pre-deletion snapshot.
+  for i in 0..total {
+    assert_eq!(*snapshot.get(&i).unwrap().value(), i);
+  }
+  assert!(db.as_inner().tombstone_len() > 0);
+
+  drop(snapshot);
+
+  // Now that the old snapshot is gone, another write should let compaction
+  // reclaim the tombstones it had to keep.
+  let mut txn = db.write();
+  txn.insert(total, total).unwrap();
+  txn.commit().unwrap();
+  assert_eq!(db.as_inner().tombstone_len(), 0);
+
+  let txn = db.read();
+  for i in 0..total {
+    if i < deleted {
+      assert!(txn.get(&i).is_none());
+    } else {
+      assert_eq!(*txn.get(&i).unwrap().value(), i);
+    }
+  }
+}
+
+#[test]
 fn rollback() {
   let db: OptimisticDb<u64, u64> = OptimisticDb::new();
   let mut txn = db.write();

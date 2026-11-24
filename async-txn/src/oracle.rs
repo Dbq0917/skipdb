@@ -1,5 +1,7 @@
 use core::ops::AddAssign;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::sync::Mutex as StdMutex;
 
 use futures::lock::{Mutex, MutexGuard};
 use smallvec_wrapper::TinyVec;
@@ -40,6 +42,9 @@ where
   /// Used to block new transaction, so all previous commits are visible to a new read.
   pub(super) txn_mark: AsyncWaterMark<S>,
 
+  /// Read timestamps that are still owned by live read or write transactions.
+  active_reads: StdMutex<BTreeMap<u64, usize>>,
+
   /// closer is used to stop watermarks.
   closer: AsyncCloser<S>,
 }
@@ -79,7 +84,7 @@ where
 
     let ts = {
       if !*done_read {
-        self.read_mark.done(read_ts).unwrap();
+        self.done_read(read_ts);
         *done_read = true;
       }
 
@@ -152,6 +157,7 @@ where
       }),
       read_mark: AsyncWaterMark::new(read_mark_name),
       txn_mark: AsyncWaterMark::new(txn_mark_name),
+      active_reads: StdMutex::new(BTreeMap::new()),
       closer,
     };
 
@@ -167,6 +173,7 @@ where
 
       let read_ts = inner.next_txn_ts - 1;
       self.read_mark.begin(read_ts).unwrap();
+      self.begin_read(read_ts);
       read_ts
     };
 
@@ -193,7 +200,41 @@ where
 
   #[inline]
   pub(super) fn done_read(&self, read_ts: u64) {
+    self.finish_read(read_ts);
     self.read_mark.done(read_ts).unwrap();
+  }
+
+  #[inline]
+  fn begin_read(&self, read_ts: u64) {
+    *self
+      .active_reads
+      .lock()
+      .unwrap()
+      .entry(read_ts)
+      .or_insert(0) += 1;
+  }
+
+  #[inline]
+  fn finish_read(&self, read_ts: u64) {
+    let mut active_reads = self.active_reads.lock().unwrap();
+    if let Some(count) = active_reads.get_mut(&read_ts) {
+      if *count > 1 {
+        *count -= 1;
+      } else {
+        active_reads.remove(&read_ts);
+      }
+    }
+  }
+
+  /// Returns the newest version that compaction can safely reclaim.
+  #[inline]
+  pub(super) fn compaction_hint(&self) -> u64 {
+    let latest_version = self.txn_mark.last_index().unwrap_or(0).saturating_add(1);
+    let oldest_active = self.active_reads.lock().unwrap().keys().next().copied();
+
+    oldest_active.map_or(latest_version, |read_ts| {
+      read_ts.saturating_add(1).min(latest_version)
+    })
   }
 }
 

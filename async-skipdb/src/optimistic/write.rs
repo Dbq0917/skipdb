@@ -36,6 +36,7 @@ impl<K, V, SP, S> OptimisticTransaction<K, V, SP, S>
 where
   K: Ord + Hash + Eq + Send + Sync + 'static,
   V: Send + Sync + 'static,
+  Values<V>: Send,
   S: BuildHasher + Send + Sync + 'static,
   SP: AsyncSpawner,
 {
@@ -62,7 +63,9 @@ where
     self
       .wtm
       .commit(|ents| async move {
-        db.inner.map.apply(ents);
+        db.inner
+          .map
+          .apply_and_compact(ents, db.inner.tm.compaction_hint());
         Ok(())
       })
       .await
@@ -73,6 +76,7 @@ impl<K, V, SP, S> OptimisticTransaction<K, V, SP, S>
 where
   K: Ord + Hash + Eq + Send + Sync + 'static,
   V: Send + Sync + 'static,
+  Values<V>: Send,
   S: BuildHasher + Send + Sync + 'static,
   SP: AsyncSpawner,
 {
@@ -107,7 +111,9 @@ where
       .wtm
       .commit_with_task(
         move |ents| async move {
-          db.inner.map.apply(ents);
+          db.inner
+            .map
+            .apply_and_compact(ents, db.inner.tm.compaction_hint());
           Ok(())
         },
         callback,

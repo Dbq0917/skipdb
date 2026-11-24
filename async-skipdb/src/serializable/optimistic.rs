@@ -35,6 +35,7 @@ impl<K, V, S> OptimisticTransaction<K, V, S>
 where
   K: CheapClone + Ord + Send + Sync + 'static,
   V: Send + Sync + 'static,
+  Values<V>: Send,
   S: AsyncSpawner,
 {
   /// Commits the transaction, following these steps:
@@ -58,7 +59,9 @@ where
     self
       .wtm
       .commit(|ents| async move {
-        db.inner.map.apply(ents);
+        db.inner
+          .map
+          .apply_and_compact(ents, db.inner.tm.compaction_hint());
         Ok(())
       })
       .await
@@ -69,6 +72,7 @@ impl<K, V, S> OptimisticTransaction<K, V, S>
 where
   K: CheapClone + Ord + Send + Sync + 'static,
   V: Send + Sync + 'static,
+  Values<V>: Send,
   S: AsyncSpawner,
 {
   /// Acts like [`commit`](WriteTransaction::commit), but takes a callback, which gets run via a
@@ -102,7 +106,9 @@ where
       .wtm
       .commit_with_task(
         move |ents| async move {
-          db.inner.map.apply(ents);
+          db.inner
+            .map
+            .apply_and_compact(ents, db.inner.tm.compaction_hint());
           Ok(())
         },
         callback,

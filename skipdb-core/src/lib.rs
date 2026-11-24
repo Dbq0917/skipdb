@@ -18,6 +18,17 @@ use txn_core::types::{Entry, EntryData, EntryValue};
 
 use crossbeam_skiplist::SkipMap;
 
+/// The minimum number of tombstones that must be present before an automatic
+/// compaction is considered. This keeps tiny databases from compacting on every
+/// single deletion.
+const MIN_TOMBSTONES_FOR_COMPACTION: u64 = 8;
+
+/// Automatic compaction is triggered once tombstones reach this percentage of
+/// the number of live keys. The denominator is the live key count rather than
+/// the total outer-map length, so delete-heavy workloads cannot hide behind
+/// their own tombstones.
+const TOMBSTONE_TO_LIVE_PERCENT: u64 = 50;
+
 pub mod iter;
 use iter::*;
 
@@ -48,6 +59,7 @@ pub trait AsSkipCore<K, V> {
 pub struct SkipCore<K, V> {
   map: SkipMap<K, Values<V>>,
   last_discard_version: AtomicU64,
+  tombstones: AtomicU64,
 }
 
 impl<K, V> Default for SkipCore<K, V> {
@@ -63,7 +75,24 @@ impl<K, V> SkipCore<K, V> {
     Self {
       map: SkipMap::new(),
       last_discard_version: AtomicU64::new(0),
+      tombstones: AtomicU64::new(0),
     }
+  }
+
+  /// Returns the approximate number of keys that have a live value.
+  #[inline]
+  pub fn live_len(&self) -> usize {
+    self
+      .map
+      .len()
+      .saturating_sub(self.tombstones.load(Ordering::Acquire) as usize)
+  }
+
+  /// Returns the approximate number of keys whose newest version is a
+  /// tombstone.
+  #[inline]
+  pub fn tombstone_len(&self) -> usize {
+    self.tombstones.load(Ordering::Acquire) as usize
   }
 
   #[inline]
@@ -87,14 +116,34 @@ where
           let ent = self.map.get_or_insert_with(key, || Values::new());
           let val = ent.value();
           val.lock();
+          let previous = val.back().map(|ent| (*ent.key(), ent.value().is_some()));
           val.insert(version, Some(value));
+
+          if let Some((previous_version, false)) = previous {
+            if version >= previous_version {
+              saturating_decrement(&self.tombstones);
+            }
+          }
+
           val.unlock();
         }
         EntryData::Remove(key) => {
           if let Some(values) = self.map.get(&key) {
             let values = values.value();
             if !values.is_empty() {
+              let previous = values.back().map(|ent| (*ent.key(), ent.value().is_some()));
               values.insert(version, None);
+
+              match previous {
+                None => {
+                  self.tombstones.fetch_add(1, Ordering::Relaxed);
+                }
+                Some((previous_version, is_live)) => {
+                  if is_live && version >= previous_version {
+                    self.tombstones.fetch_add(1, Ordering::Relaxed);
+                  }
+                }
+              }
             }
           }
         }
@@ -185,21 +234,64 @@ where
   V: Send + 'static,
   Values<V>: Send,
 {
+  /// Applies committed entries and compacts automatically when the tombstone
+  /// count has grown too large relative to the number of live keys.
+  pub fn apply_and_compact(&self, entries: OneOrMore<Entry<K, V>>, discard_hint: u64) {
+    self.apply(entries);
+    self.compact_if_needed(discard_hint);
+  }
+
+  /// Compacts only when tombstones have reached the configured proportion of
+  /// live keys. Returns `true` when a compaction attempt was made.
+  #[inline]
+  pub fn compact_if_needed(&self, discard_hint: u64) -> bool {
+    if !self.compaction_needed() {
+      return false;
+    }
+
+    self.compact_with_discard_hint(discard_hint);
+    true
+  }
+
+  #[inline]
+  fn compaction_needed(&self) -> bool {
+    let tombstones = self.tombstones.load(Ordering::Acquire);
+    if tombstones < MIN_TOMBSTONES_FOR_COMPACTION {
+      return false;
+    }
+
+    let live = (self.map.len() as u64).saturating_sub(tombstones);
+    if tombstones.saturating_mul(100) < live.saturating_mul(TOMBSTONE_TO_LIVE_PERCENT) {
+      return false;
+    }
+
+    true
+  }
+
+  /// Compacts using a discard hint from the transaction manager.
+  #[inline]
+  pub fn compact_with_discard_hint(&self, discard_hint: u64) {
+    self.compact(discard_hint);
+  }
+
   pub fn compact(&self, new_discard_version: u64) {
-    match self
-      .last_discard_version
-      .fetch_update(Ordering::SeqCst, Ordering::Acquire, |val| {
-        if val >= new_discard_version {
-          None
-        } else {
-          Some(new_discard_version)
-        }
-      }) {
-      Ok(_) => {}
-      // if we fail to insert the new discard version,
-      // which means there is another thread that is compacting the database.
-      // To avoid run multiple compacting at the same time, we just return.
-      Err(_) => return,
+    loop {
+      let val = self.last_discard_version.load(Ordering::Acquire);
+      if val >= new_discard_version {
+        return;
+      }
+
+      match self.last_discard_version.compare_exchange_weak(
+        val,
+        new_discard_version,
+        Ordering::SeqCst,
+        Ordering::Acquire,
+      ) {
+        Ok(_) => break,
+        // Another thread changed the discard version. Retry with its value; if
+        // it is already at least as new as ours, the loop exits above.
+        Err(_) => continue,
+      }
     }
 
     for ent in self.map.iter() {
@@ -224,7 +316,9 @@ where
             // try to lock the entry.
             if values.try_lock() {
               // we get the lock, then we can remove the whole key.
-              ent.remove();
+              if ent.remove() {
+                saturating_decrement(&self.tombstones);
+              }
 
               // unlock the entry.
               values.unlock();
@@ -244,18 +338,22 @@ where
         // handle the complex case: we have some values that are larger than the new discard version,
         // and some values that are smaller than the new discard version.
 
-        // find the first value that is smaller than the new discard version.
-        let mut bound = values.upper_bound(Bound::Excluded(&new_discard_version));
+        // Find the newest value that is smaller than the new discard version.
+        // It has to stay as a fallback for readers that started before the
+        // cutoff, unless it is a tombstone (in which case absence and the
+        // tombstone are equivalent).
+        if let Some(anchor) = values.upper_bound(Bound::Excluded(&new_discard_version)) {
+          let mut prev = anchor.prev();
 
-        // means that no value is smaller than the new discard version.
-        if bound.is_none() {
-          continue;
-        }
+          if anchor.value().is_none() {
+            anchor.remove();
+          }
 
-        // remove all values that are smaller than the new discard version.
-        while let Some(ent) = bound {
-          bound = ent.prev();
-          ent.remove();
+          // Remove everything older than the anchor.
+          while let Some(ent) = prev {
+            prev = ent.prev();
+            ent.remove();
+          }
         }
       } else {
         // we do not have any value in the entry, then we can try to remove the whole key.
@@ -269,6 +367,22 @@ where
           values.unlock();
         }
       }
+    }
+  }
+}
+
+#[inline]
+fn saturating_decrement(counter: &AtomicU64) {
+  let mut current = counter.load(Ordering::Relaxed);
+  loop {
+    if current == 0 {
+      return;
+    }
+
+    match counter.compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed)
+    {
+      Ok(_) => return,
+      Err(actual) => current = actual,
     }
   }
 }

@@ -32,8 +32,9 @@ where
 
 impl<K, V, S> OptimisticTransaction<K, V, S>
 where
-  K: Ord + Hash + Eq,
+  K: Ord + Hash + Eq + Send + 'static,
   V: Send + 'static,
+  Values<V>: Send,
   S: BuildHasher,
 {
   /// Commits the transaction, following these steps:
@@ -54,7 +55,11 @@ where
   #[inline]
   pub fn commit(&mut self) -> Result<(), WtmError<Infallible, Infallible, Infallible>> {
     self.wtm.commit(|ents| {
-      self.db.inner.map.apply(ents);
+      self
+        .db
+        .inner
+        .map
+        .apply_and_compact(ents, self.db.inner.tm.compaction_hint());
       Ok(())
     })
   }
@@ -64,6 +69,7 @@ impl<K, V, S> OptimisticTransaction<K, V, S>
 where
   K: Ord + Hash + Eq + Send + Sync + 'static,
   V: Send + Sync + 'static,
+  Values<V>: Send,
   S: BuildHasher + Send + Sync + 'static,
 {
   /// Acts like [`commit`](WriteTransaction::commit), but takes a callback, which gets run via a
@@ -94,7 +100,9 @@ where
 
     self.wtm.commit_with_callback(
       move |ents| {
-        db.inner.map.apply(ents);
+        db.inner
+          .map
+          .apply_and_compact(ents, db.inner.tm.compaction_hint());
         Ok(())
       },
       callback,

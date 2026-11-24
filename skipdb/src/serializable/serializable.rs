@@ -27,8 +27,9 @@ where
 
 impl<K, V> SerializableTransaction<K, V>
 where
-  K: CheapClone + Ord,
+  K: CheapClone + Ord + Send + 'static,
   V: Send + 'static,
+  Values<V>: Send,
 {
   /// Commits the transaction, following these steps:
   ///
@@ -48,7 +49,11 @@ where
   #[inline]
   pub fn commit(&mut self) -> Result<(), WtmError<Infallible, Infallible, Infallible>> {
     self.wtm.commit(|ents| {
-      self.db.inner.map.apply(ents);
+      self
+        .db
+        .inner
+        .map
+        .apply_and_compact(ents, self.db.inner.tm.compaction_hint());
       Ok(())
     })
   }
@@ -58,6 +63,7 @@ impl<K, V> SerializableTransaction<K, V>
 where
   K: CheapClone + Ord + Send + Sync + 'static,
   V: Send + Sync + 'static,
+  Values<V>: Send,
 {
   /// Acts like [`commit`](WriteTransaction::commit), but takes a callback, which gets run via a
   /// thread to avoid blocking this function. Following these steps:
@@ -87,7 +93,9 @@ where
 
     self.wtm.commit_with_callback(
       move |ents| {
-        db.inner.map.apply(ents);
+        db.inner
+          .map
+          .apply_and_compact(ents, db.inner.tm.compaction_hint());
         Ok(())
       },
       callback,

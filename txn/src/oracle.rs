@@ -1,5 +1,6 @@
 use core::ops::AddAssign;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use parking_lot::{Mutex, MutexGuard};
 use smallvec_wrapper::TinyVec;
@@ -36,6 +37,9 @@ pub(super) struct Oracle<C> {
 
   /// Used to block new transaction, so all previous commits are visible to a new read.
   pub(super) txn_mark: WaterMark,
+
+  /// Read timestamps that are still owned by live read or write transactions.
+  active_reads: Mutex<BTreeMap<u64, usize>>,
 
   /// closer is used to stop watermarks.
   closer: Closer,
@@ -75,7 +79,7 @@ where
 
     let ts = {
       if !*done_read {
-        self.read_mark.done(read_ts).unwrap();
+        self.done_read(read_ts);
         *done_read = true;
       }
 
@@ -145,6 +149,7 @@ impl<C> Oracle<C> {
       }),
       read_mark: WaterMark::new(read_mark_name),
       txn_mark: WaterMark::new(txn_mark_name),
+      active_reads: Mutex::new(BTreeMap::new()),
       closer,
     };
 
@@ -160,6 +165,7 @@ impl<C> Oracle<C> {
 
       let read_ts = inner.next_txn_ts - 1;
       self.read_mark.begin(read_ts).unwrap();
+      self.begin_read(read_ts);
       read_ts
     };
 
@@ -185,7 +191,36 @@ impl<C> Oracle<C> {
 
   #[inline]
   pub(super) fn done_read(&self, read_ts: u64) {
+    self.finish_read(read_ts);
     self.read_mark.done(read_ts).unwrap();
+  }
+
+  #[inline]
+  fn begin_read(&self, read_ts: u64) {
+    *self.active_reads.lock().entry(read_ts).or_insert(0) += 1;
+  }
+
+  #[inline]
+  fn finish_read(&self, read_ts: u64) {
+    let mut active_reads = self.active_reads.lock();
+    if let Some(count) = active_reads.get_mut(&read_ts) {
+      if *count > 1 {
+        *count -= 1;
+      } else {
+        active_reads.remove(&read_ts);
+      }
+    }
+  }
+
+  /// Returns the newest version that compaction can safely reclaim.
+  #[inline]
+  pub(super) fn compaction_hint(&self) -> u64 {
+    let latest_version = self.txn_mark.last_index().unwrap_or(0).saturating_add(1);
+    let oldest_active = self.active_reads.lock().keys().next().copied();
+
+    oldest_active.map_or(latest_version, |read_ts| {
+      read_ts.saturating_add(1).min(latest_version)
+    })
   }
 
   #[inline]

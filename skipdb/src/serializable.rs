@@ -132,6 +132,9 @@ where
   /// Compact the database.
   #[inline]
   pub fn compact(&self) {
-    self.inner.map.compact(self.inner.tm.discard_hint());
+    self
+      .inner
+      .map
+      .compact_with_discard_hint(self.inner.tm.compaction_hint());
   }
 }
