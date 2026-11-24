@@ -111,6 +111,28 @@ where
     self.wtm.rollback()
   }
 
+  /// Marks an application-defined conflict group as read.
+  ///
+  /// Range markers already protect contiguous key groups. This method is
+  /// useful when the aggregate identity is explicit but its records are not
+  /// addressed through one contiguous range.
+  #[inline]
+  pub fn mark_read_group(&mut self, group: &K) {
+    self.wtm.mark_read_group(group);
+  }
+
+  /// Marks an application-defined conflict group as written.
+  #[inline]
+  pub fn mark_conflict_group(&mut self, group: &K) {
+    self.wtm.mark_conflict_group(group);
+  }
+
+  /// Alias for [`SerializableTransaction::mark_read_group`].
+  #[inline]
+  pub fn mark_group(&mut self, group: &K) {
+    self.mark_read_group(group);
+  }
+
   /// Returns true if the given key exists in the database.
   #[inline]
   pub fn contains_key(

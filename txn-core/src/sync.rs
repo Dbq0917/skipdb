@@ -45,6 +45,25 @@ impl<C: Cm> Marker<'_, C> {
     self.marker.mark_read(k);
   }
 
+  /// Marks a coarse conflict group as read.
+  ///
+  /// A group is an application-defined conflict token. It is useful when one
+  /// invariant spans several distinct records, but using a whole-table marker
+  /// would be too broad.
+  pub fn mark_group(&mut self, group: &C::Key) {
+    self.marker.mark_read_group(group);
+  }
+
+  /// Marks a coarse conflict group as read.
+  pub fn mark_read_group(&mut self, group: &C::Key) {
+    self.marker.mark_read_group(group);
+  }
+
+  /// Marks a coarse conflict group as written.
+  pub fn mark_conflict_group(&mut self, group: &C::Key) {
+    self.marker.mark_conflict_group(group);
+  }
+
   /// Marks a key is conflicted.
   pub fn mark_conflict(&mut self, k: &C::Key) {
     self.marker.mark_conflict(k);
@@ -158,6 +177,25 @@ pub trait Cm: Sized {
   /// Rollback the conflict manager.
   fn rollback(&mut self) -> Result<(), Self::Error>;
 }
+
+/// Conflict manager support for application-defined coarse conflict groups.
+///
+/// The default implementation uses the group token as a normal conflict key.
+/// This keeps group identities local to the related aggregate instead of
+/// escalating to an all-key or whole-table conflict.
+pub trait CmGroup: Cm {
+  /// Marks the group as read.
+  fn mark_read_group(&mut self, group: &Self::Key) {
+    self.mark_read(group);
+  }
+
+  /// Marks the group as conflicted by a write.
+  fn mark_conflict_group(&mut self, group: &Self::Key) {
+    self.mark_conflict(group);
+  }
+}
+
+impl<C: Cm> CmGroup for C {}
 
 /// A extended trait of the [`Cm`] trait that can be used to manage the range of keys.
 pub trait CmRange: Cm + Sized {

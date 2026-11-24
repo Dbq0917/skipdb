@@ -185,6 +185,7 @@ where
   V: Send + 'static,
   Values<V>: Send,
 {
+  #[allow(deprecated)]
   pub fn compact(&self, new_discard_version: u64) {
     match self
       .last_discard_version

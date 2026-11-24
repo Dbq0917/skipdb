@@ -93,6 +93,25 @@ where
     }
   }
 
+  /// Marks a coarse conflict group as read.
+  pub fn mark_read_group(&mut self, group: &K) {
+    if let Some(ref mut conflict_manager) = self.conflict_manager {
+      conflict_manager.mark_read_group(group);
+    }
+  }
+
+  /// Marks a coarse conflict group as written.
+  pub fn mark_conflict_group(&mut self, group: &K) {
+    if let Some(ref mut conflict_manager) = self.conflict_manager {
+      conflict_manager.mark_conflict_group(group);
+    }
+  }
+
+  /// Alias for [`Wtm::mark_read_group`].
+  pub fn mark_group(&mut self, group: &K) {
+    self.mark_read_group(group);
+  }
+
   /// Marks a key is conflict.
   pub fn mark_conflict(&mut self, k: &K) {
     if let Some(ref mut conflict_manager) = self.conflict_manager {

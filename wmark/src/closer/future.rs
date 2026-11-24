@@ -123,6 +123,7 @@ impl<S> AsyncCloser<S> {
 
   /// Calls [`WaitGroup::done`] on the [`WaitGroup`].
   #[inline]
+  #[allow(deprecated)]
   pub fn done(&self) {
     if self
       .inner
