@@ -110,6 +110,16 @@ impl<K, V, SP: AsyncSpawner, S> OptimisticDb<K, V, SP, S> {
   pub async fn read(&self) -> ReadTransaction<K, V, OptimisticDb<K, V, SP, S>, HashCm<K, S>, SP> {
     ReadTransaction::new(self.clone(), self.inner.tm.read().await)
   }
+
+  /// Create a point-in-time snapshot for consistent reads.
+  ///
+  /// The returned snapshot observes the version that was current when this
+  /// method was called. Writes committed afterwards are not visible through the
+  /// snapshot and are not blocked by it.
+  #[inline]
+  pub async fn snapshot(&self) -> Snapshot<K, V, OptimisticDb<K, V, SP, S>, HashCm<K, S>, SP> {
+    self.read().await
+  }
 }
 
 impl<K, V, SP, S> OptimisticDb<K, V, SP, S>

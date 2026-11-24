@@ -92,6 +92,16 @@ impl<K, V> SerializableDb<K, V> {
   pub fn read(&self) -> ReadTransaction<K, V, SerializableDb<K, V>, BTreeCm<K>> {
     ReadTransaction::new(self.clone(), self.inner.tm.read())
   }
+
+  /// Create a point-in-time snapshot for consistent reads.
+  ///
+  /// The returned snapshot observes the version that was current when this
+  /// method was called. Writes committed afterwards are not visible through the
+  /// snapshot and are not blocked by it.
+  #[inline]
+  pub fn snapshot(&self) -> Snapshot<K, V, SerializableDb<K, V>, BTreeCm<K>> {
+    self.read()
+  }
 }
 
 impl<K, V> SerializableDb<K, V>

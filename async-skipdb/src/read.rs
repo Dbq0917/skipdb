@@ -2,7 +2,11 @@ use skipdb_core::rev_range::RevRange;
 
 use super::*;
 
-/// A read only transaction over the [`OptimisticDb`],
+/// A read only transaction over the [`OptimisticDb`].
+///
+/// A read transaction captures a fixed MVCC version when it is created. All reads
+/// through the transaction observe that version, even if newer versions are
+/// committed while the transaction is still alive.
 pub struct ReadTransaction<K, V, I, C, S>
 where
   S: AsyncSpawner,
@@ -10,6 +14,16 @@ where
   pub(crate) db: I,
   pub(crate) rtm: AsyncRtm<K, V, C, BTreePwm<K, V>, S>,
 }
+
+/// A point-in-time view of a database.
+///
+/// Snapshots are backed by the database's MVCC versions instead of a global
+/// read lock. Holding a snapshot while exporting all entries does not block
+/// concurrent writes; it only keeps the versions visible at the snapshot
+/// timestamp alive for the lifetime of the snapshot.
+///
+/// This is the type returned by the database's `snapshot` methods.
+pub type Snapshot<K, V, I, C, S> = ReadTransaction<K, V, I, C, S>;
 
 impl<K, V, I, C, S> ReadTransaction<K, V, I, C, S>
 where

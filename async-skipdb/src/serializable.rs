@@ -102,6 +102,16 @@ impl<K, V, S: AsyncSpawner> SerializableDb<K, V, S> {
   pub async fn read(&self) -> ReadTransaction<K, V, SerializableDb<K, V, S>, BTreeCm<K>, S> {
     ReadTransaction::new(self.clone(), self.inner.tm.read().await)
   }
+
+  /// Create a point-in-time snapshot for consistent reads.
+  ///
+  /// The returned snapshot observes the version that was current when this
+  /// method was called. Writes committed afterwards are not visible through the
+  /// snapshot and are not blocked by it.
+  #[inline]
+  pub async fn snapshot(&self) -> Snapshot<K, V, SerializableDb<K, V, S>, BTreeCm<K>, S> {
+    self.read().await
+  }
 }
 
 impl<K, V, S> SerializableDb<K, V, S>

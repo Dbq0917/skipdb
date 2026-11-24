@@ -94,6 +94,16 @@ impl<K, V, S> OptimisticDb<K, V, S> {
   pub fn read(&self) -> ReadTransaction<K, V, OptimisticDb<K, V, S>, HashCm<K, S>> {
     ReadTransaction::new(self.clone(), self.inner.tm.read())
   }
+
+  /// Create a point-in-time snapshot for consistent reads.
+  ///
+  /// The returned snapshot observes the version that was current when this
+  /// method was called. Writes committed afterwards are not visible through the
+  /// snapshot and are not blocked by it.
+  #[inline]
+  pub fn snapshot(&self) -> Snapshot<K, V, OptimisticDb<K, V, S>, HashCm<K, S>> {
+    self.read()
+  }
 }
 
 impl<K, V, S> OptimisticDb<K, V, S>
