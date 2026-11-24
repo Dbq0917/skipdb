@@ -1,0 +1,20 @@
+[package]
+name = "group-commit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords = ["database", "durability", "wal", "group-commit", "fsync"]
+readme = "README.md"
+description = "Group commit for write-ahead logs: batches many transactions into a single fsync without acknowledging un-durable transactions."
+
+[dependencies]
+crossbeam-channel = { workspace = true, features = ["std"] }
+parking_lot.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

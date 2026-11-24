@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "group-commit",
   "txn-core",
   "txn",
   "async-txn",
